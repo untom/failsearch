@@ -196,8 +196,8 @@ def search(db, text, n=5):
     print(logits.shape)
 
     idx = np.argsort(logits[0])[-n:]
-    result = ["file://" + files[i] for i in idx[::-1]]
-    print("\n".join(result))
+    return [files[i] for i in idx[::-1]]
+
 
 
 if __name__ == "__main__":
@@ -217,6 +217,7 @@ if __name__ == "__main__":
     if args.index is not None and args.search is None:
         index_directory(db, args.index)
     elif args.search is not None and args.index is None:
-        search(db, args.search, n=args.num_results)
+        results = search(db, args.search, n=args.num_results)
+        print("\n".join(results))
     else:
         print("Please use either the index or search method.")

@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Search Results for {{ search_string }}</title>
+</head>
+<body>
+    <h1>Search Results for {{ search_string }}</h1>
+    <p>
+    {% for item in results %}
+        <a href="../show/{{item}}"><img src="../show/{{item}}" width="256" height="256" /></a> 
+        
+    {% endfor %}
+    </p>
+</body>
+</html>
