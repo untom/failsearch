@@ -1,15 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Search Results for {{ search_string }}</title>
+    {% if search_string is not none %}  
+    <title>Failsearch: {{ search_string }}</title>
+    {% else %}
+    <title>Failsearch</title>
+    {% endif %}
 </head>
 <body>
-    <h1>Search Results for {{ search_string }}</h1>
+    <h1>Welcome to Failsearch</h1>
+    <form>
+        <label for="search">Search for:</label><br>
+        <input type="text" id="search" name="search"><br>
+        <input type="submit" value="Submit">
+    </form> 
+
+    {% if results is not none %}  
+    <h2>Search Results for "{{ search_string }}"</h2>
     <p>
     {% for item in results %}
         <a href="../show/{{item}}"><img src="../show/{{item}}" width="256" height="256" /></a> 
         
     {% endfor %}
     </p>
+    {% endif %}
 </body>
 </html>

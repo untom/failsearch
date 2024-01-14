@@ -2,6 +2,7 @@
 """Uses AI models to search for images."""
 
 import argparse
+import gc
 import logging
 import numpy as np
 import pathlib
@@ -75,7 +76,7 @@ class ClipSimilarityModel:
 class Database:
     """A Database to store image representations of a given model."""
 
-    def __init__(self, fname=None, representation_size=512):
+    def __init__(self, fname=None, embed_size=512):
         if fname is None:
             fname = ":memory:"
         self.con = sqlite3.connect(fname, check_same_thread=False, isolation_level="Deferred")
@@ -84,11 +85,15 @@ class Database:
         self.con.execute('pragma journal_mode=wal')  # Moar speed.
         self.con.execute("PRAGMA synchronous = NORMAL")
         self.con.execute("PRAGMA journal_mode = WAL")
-        self.representation_size = representation_size
+        self.embed_size = embed_size
 
 
     def insert(self, paths, image_embeds):
-        assert image_embeds.shape[1] == self.representation_size
+        assert image_embeds.shape[1] == self.embed_size, f"{image_embeds.shape[1]=} != {self.embed_size}"
+
+        if len(paths) != image_embeds.shape[0]:
+            raise RuntimeError(f"{len(paths)=} != {image_embeds.shape[0]}=")
+        
         data = [(str(p), i.tobytes()) for p, i in zip(paths, image_embeds)]    
         self.con.executemany("INSERT INTO clip_image_embeddings(path, image_embeds) VALUES(?, ?)", data)
         self.con.commit()
@@ -101,7 +106,7 @@ class Database:
     def get_all_data(self):
         n = self.get_num_entries()
         paths = []
-        image_embeds = np.empty((n, self.representation_size), dtype=np.float32)
+        image_embeds = np.empty((n, self.embed_size), dtype=np.float32)
         for i, (pp, ii) in enumerate(self.con.execute("SELECT path, image_embeds FROM clip_image_embeddings")):
             image_embeds[i] = np.frombuffer(ii, np.float32)
             paths.append(pp)
@@ -132,7 +137,7 @@ def batch(sequence, batch_size):
         i = end_idx
 
 
-def index_directory(db, path, batch_size=32, file_extensions=IMAGE_FILE_EXTENSIONS):
+def index_directory(db, path, batch_size=32, num_threads=4, file_extensions=IMAGE_FILE_EXTENSIONS):
     """Stores embeddings for all image files below a given path in the db."""
     path = pathlib.Path(path)
     all_files = get_all_files_with_extension(path, file_extensions)
@@ -140,8 +145,9 @@ def index_directory(db, path, batch_size=32, file_extensions=IMAGE_FILE_EXTENSIO
     logging.info(f"total relevant files: {len(all_files)}")
     logging.info(f"total GB in pixel_values: {(4 * 3*224*224 * len(all_files)) / 1024**3:3.2f}")
     logging.info(f"total GB in image_embeds: {(4 * 512 * len(all_files)) / 1024**3:3.2f}")
+    logging.info(f"{torch.cuda.is_available()=}, {torch.cuda.device_count()=}")
 
-    model = ClipSimilarityModel()
+    model = ClipSimilarityModel(use_gpu=True)
 
     # In the following, we start a 2-stage pipeline: Stage 1 loads a batch of
     # images from disk and preprocesses them (within a threadpool), and Stage 2
@@ -151,14 +157,28 @@ def index_directory(db, path, batch_size=32, file_extensions=IMAGE_FILE_EXTENSIO
     def _preprocess_images(q, model, files):
         while q.full():
             time.sleep(1)
-        images = [Image.open(f) for f in files]
-        pixel_values = model.preprocess_images(images)
-        del images
-        pixel_values = pixel_values.to(device="cuda")
-        q.put((files, pixel_values))
+        pixel_values_list = []
+        processed_files = []
+
+        # Process images w/o batching so we're able to catch exceptions.
+        for f in files:
+            try:
+                with Image.open(f) as img:
+                    pixel_values_list.append(model.preprocess_images(img))
+                processed_files.append(f)
+            except Exception as err:
+                logging.warning(str(err))
+
+        if len(pixel_values_list):
+            pixel_values = torch.cat(pixel_values_list, axis=0)
+            pixel_values = pixel_values.to(device="cuda")
+            q.put((processed_files, pixel_values))
+            del pixel_values, pixel_values_list
+
 
 
     def _embed(q, model, db, num_total):
+        n = 0
         with tqdm.tqdm(total=num_total) as progressbar:
             while True:
                 tmp = q.get()
@@ -166,17 +186,21 @@ def index_directory(db, path, batch_size=32, file_extensions=IMAGE_FILE_EXTENSIO
                     return
                 files, pixel_values = tmp
                 image_embeds = model.create_image_embeddings(pixel_values).detach().cpu().numpy()
+                del pixel_values
                 db.insert(files, image_embeds)
+                del files, image_embeds
                 progressbar.update(1)
+                n += 1
+                if n % 100 == 0:
+                    gc.collect()
 
     q = queue.Queue(maxsize=4)
     num_batches = len(all_files) // batch_size
     embed_thread = threading.Thread(target=_embed, args=(q, model, db, num_batches))
     embed_thread.start()
 
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(num_threads) as pool:
         tmp = pool.map(lambda f: _preprocess_images(q, model, f), batch(all_files, batch_size))
-        print("joining pool", flush=True)
         for _ in tmp: pass  # waiting for jobs to be done.
         q.put(None)
     embed_thread.join() 
@@ -207,6 +231,7 @@ if __name__ == "__main__":
     parser.add_argument('-i', '--index', type=str, help='Index everything in the given directory', default=None)
     parser.add_argument('-s', '--search', type=str, help='Search DB for best matches', default=None)
     parser.add_argument('-n', '--num_results', type=int, help='Number of returned search results.', default=10)
+    parser.add_argument('-t', '--num_threads', type=int, help='Number of threads used for indexing.', default=4)
     args = parser.parse_args()
 
     db_path = pathlib.Path(args.db)
@@ -215,7 +240,7 @@ if __name__ == "__main__":
     db = Database(args.db)
     logging.info(f"Entries in DB: {db.get_num_entries()}")
     if args.index is not None and args.search is None:
-        index_directory(db, args.index)
+        index_directory(db, path=args.index, num_threads=args.num_threads)
     elif args.search is not None and args.index is None:
         results = search(db, args.search, n=args.num_results)
         print("\n".join(results))

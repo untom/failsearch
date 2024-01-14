@@ -3,22 +3,36 @@
 
 import failsearch
 import flask
+import logging
+import os
 import urllib.parse
 
+
+logging.basicConfig(
+    format='%(levelname)s:%(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ],
+    level=logging.INFO)
+
+
 app = flask.Flask(__name__)
-db = failsearch.Database("./failsearch.sqlite")
+_db_name = os.environ.get('DB_NAME', 'failsearch.sqlite')
+logging.info(f"Using DB: {_db_name}")
+db = failsearch.Database(_db_name)
+
 
 @app.route("/")
 def hello_world():
-    return f"<p>Hello from Failsearch! We have {db.get_num_entries()} entries in the DB</p>"
+    #return f"<p>Hello from Failsearch! We have {db.get_num_entries()} entries in the DB</p>"
 
-
-@app.route('/search/<text>')
-def show_search_results(text):
-    results = failsearch.search(db, text, n=20)
-    results_enc = [urllib.parse.quote(r, safe='') for r in results]
-    #esults_enc = results
-    return flask.render_template('results.html', searchstring=text, results=results_enc)
+    search = flask.request.args.get('search')
+    if search is not None:
+        results = failsearch.search(db, search, n=20)
+        results_enc = [urllib.parse.quote(r, safe='') for r in results] 
+    else:
+        results_enc = None
+    return flask.render_template('results.html', search_string=search, results=results_enc)
 
 
 @app.route('/show/<path:imgpath>')
