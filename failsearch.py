@@ -134,7 +134,7 @@ def batch(sequence, batch_size):
 
 def index_directory(db, path, batch_size=32, file_extensions=IMAGE_FILE_EXTENSIONS):
     """Stores embeddings for all image files below a given path in the db."""
-    path = pathlib.Path("/files/tom/bilder")
+    path = pathlib.Path(path)
     all_files = get_all_files_with_extension(path, file_extensions)
 
     logging.info(f"total relevant files: {len(all_files)}")
