@@ -1,5 +1,5 @@
 #!/bin/env python3
-"""Uses AI models to search for images."""
+"""Uses AI models to search through images."""
 
 import abc
 import argparse
@@ -46,7 +46,8 @@ class SimilarityModelBase(abc.ABC):
     def get_logits(self, image_embeds, text_embeds):
         with torch.no_grad():
             scale = self._get_logit_scale()
-            logits = torch.matmul(text_embeds, image_embeds.t()) * scale
+            bias = self._get_logit_bias()
+            logits = torch.matmul(text_embeds, image_embeds.t()) * scale + bias
         return logits.detach().numpy()
 
     def create_image_embeddings(self, pixel_values):
@@ -58,6 +59,9 @@ class SimilarityModelBase(abc.ABC):
     def _get_logit_scale(self):
         pass
 
+    def _get_logit_bias(self):
+        return 0
+
 
 class AlignModel(SimilarityModelBase):
     """An ALIGN model to calculate representations of text/images and score their similarities."""
@@ -66,7 +70,10 @@ class AlignModel(SimilarityModelBase):
         self.processor = transformers.AlignProcessor.from_pretrained(model_name)
         self.model = transformers.AlignModel.from_pretrained(model_name)
         if use_gpu:
-            self.model = self.model.to("cuda")
+            if torch.cuda.is_available():
+                self.model = self.model.to("cuda")
+            else:
+                logging.warning("No GPU devices available")
 
     def create_image_embeddings(self, pixel_values):
         with torch.no_grad():
@@ -89,6 +96,45 @@ class AlignModel(SimilarityModelBase):
         return 1.0 / self.model.temperature
 
 
+class SiglipModel(SimilarityModelBase):
+    """A CLIP model to calculate representations of text/images and score their similarities."""
+    def __init__(self, use_gpu=True):
+        model_name = "google/siglip-base-patch16-224"
+        self.processor = transformers.SiglipProcessor.from_pretrained(model_name)
+        self.model = transformers.SiglipModel.from_pretrained(model_name)
+        if use_gpu:
+            if torch.cuda.is_available():
+                self.model = self.model.to("cuda")
+            else:
+                logging.warning("No GPU devices available")
+
+    def preprocess_texts(self, texts):
+        inputs = self.processor(text=texts, return_tensors="pt", padding="max_length")
+        return inputs
+
+    def create_image_embeddings(self, pixel_values):
+        with torch.no_grad():
+            vision_outputs = self.model.vision_model(pixel_values=pixel_values)
+            image_embeds = vision_outputs[1]
+            image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
+        return image_embeds
+
+    def create_text_embeddings(self, text_inputs):
+        with torch.no_grad():
+            attention_mask = text_inputs.get('attention_mask', None)
+            input_ids = text_inputs['input_ids']
+            text_outputs = self.model.text_model(input_ids=input_ids, attention_mask=attention_mask)
+            text_embeds = text_outputs[1]
+            text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
+        return text_embeds
+
+    def _get_logit_scale(self):
+        return self.model.logit_scale.exp()
+
+    def _get_logit_bias(self):
+        return self.model.logit_bias
+
+
 class ClipModel(SimilarityModelBase):
     """A CLIP model to calculate representations of text/images and score their similarities."""
     def __init__(self, use_gpu=True):
@@ -96,7 +142,10 @@ class ClipModel(SimilarityModelBase):
         self.processor = transformers.CLIPProcessor.from_pretrained(model_name)
         self.model = transformers.CLIPModel.from_pretrained(model_name)
         if use_gpu:
-            self.model = self.model.to("cuda")
+            if torch.cuda.is_available():
+                self.model = self.model.to("cuda")
+            else:
+                logging.warning("No GPU devices available")
 
     def create_image_embeddings(self, pixel_values):
         with torch.no_grad():
@@ -121,7 +170,9 @@ class ClipModel(SimilarityModelBase):
 
 
 def get_model(model_name, use_gpu):
-    if model_name == "openai/clip-vit-base-patch32":
+    if model_name == 'google/siglip-base-patch16-224':
+        return SiglipModel(use_gpu)
+    elif model_name == "openai/clip-vit-base-patch32":
         return ClipModel(use_gpu) 
     elif model_name == "kakaobrain/align-base":
         return AlignModel(use_gpu)
@@ -244,7 +295,8 @@ def index_directory(db, path, model_name, batch_size=32, num_threads=4, file_ext
 
         if len(pixel_values_list):
             pixel_values = torch.cat(pixel_values_list, axis=0)
-            pixel_values = pixel_values.to(device="cuda")
+            if torch.cuda.is_available():
+                pixel_values = pixel_values.to(device="cuda")
             q.put((processed_files, pixel_values))
             del pixel_values, pixel_values_list
 
@@ -285,14 +337,13 @@ def search(db, text, n=5):
 
     model_name = db.get_model()
     cpu_model = get_model(model_name, use_gpu = False)
+    logging.info(f"Model: {model_name}")
 
     files, image_embeds = db.get_all_data()
     image_embeds = torch.from_numpy(image_embeds)
     text_values = cpu_model.preprocess_texts([text])
     text_embeds = cpu_model.create_text_embeddings(text_values)
     logits = cpu_model.get_logits(image_embeds, text_embeds)
-    print(logits.shape)
-
     idx = np.argsort(logits[0])[-n:]
     return [files[i] for i in idx[::-1]]
 
@@ -306,7 +357,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--search', type=str, help='Search DB for best matches', default=None)
     parser.add_argument('-n', '--num_results', type=int, help='Number of returned search results.', default=10)
     parser.add_argument('-t', '--num_threads', type=int, help='Number of threads used for indexing.', default=4)
-    parser.add_argument('-m', '--model', type=str, help='Model name.', default="openai/clip-vit-base-patch32")
+    parser.add_argument('-m', '--model', type=str, help='Model name.', default="google/siglip-base-patch16-224")
     args = parser.parse_args()
 
     db_path = pathlib.Path(args.db)

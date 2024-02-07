@@ -23,12 +23,12 @@ db = failsearch.Database(_db_name)
 
 
 @app.route("/")
-def hello_world():
+def main():
     #return f"<p>Hello from Failsearch! We have {db.get_num_entries()} entries in the DB</p>"
 
     search = flask.request.args.get('search')
     if search is not None:
-        results = failsearch.search(db, search, n=20)
+        results = failsearch.search(db, search, n=100)
         results_enc = [urllib.parse.quote(r, safe='') for r in results] 
     else:
         results_enc = None

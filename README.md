@@ -52,7 +52,13 @@ This will start the interface on port 5000. Browse to
 http://127.0.0.1:5000 to see the web interface.
 
 See `flask -h` for information on how to set a different port
-or other options.
+or other options. You can use the `$DB_NAME` environment
+variable to specify which database file to load. For example:
+
+```
+python3 failsearch.py -d img-align.sqlite -i /media/img -m "kakaobrain/align-base"
+DB_NAME=img-align.sqlite flask --app web_ui run --host=0.0.0.0
+```
 
 
 
