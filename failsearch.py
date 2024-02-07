@@ -38,6 +38,14 @@ class SimilarityModelBase(abc.ABC):
             image_preproc = self.processor(images=images, return_tensors="pt")
             pixel_values = image_preproc['pixel_values']
         return pixel_values
+    
+    def to_cuda(self):
+        """Enables GPU processing."""
+        if torch.cuda.is_available():
+            self.model = self.model.to("cuda")
+        else:
+            logging.warning("No GPU devices available")
+        return self
 
     def preprocess_texts(self, texts):
         inputs = self.processor(text=texts, return_tensors="pt", padding=True)
@@ -65,15 +73,10 @@ class SimilarityModelBase(abc.ABC):
 
 class AlignModel(SimilarityModelBase):
     """An ALIGN model to calculate representations of text/images and score their similarities."""
-    def __init__(self, use_gpu=True):
+    def __init__(self):
         model_name = "kakaobrain/align-base"
         self.processor = transformers.AlignProcessor.from_pretrained(model_name)
         self.model = transformers.AlignModel.from_pretrained(model_name)
-        if use_gpu:
-            if torch.cuda.is_available():
-                self.model = self.model.to("cuda")
-            else:
-                logging.warning("No GPU devices available")
 
     def create_image_embeddings(self, pixel_values):
         with torch.no_grad():
@@ -98,15 +101,10 @@ class AlignModel(SimilarityModelBase):
 
 class SiglipModel(SimilarityModelBase):
     """A CLIP model to calculate representations of text/images and score their similarities."""
-    def __init__(self, use_gpu=True):
+    def __init__(self):
         model_name = "google/siglip-base-patch16-224"
         self.processor = transformers.SiglipProcessor.from_pretrained(model_name)
         self.model = transformers.SiglipModel.from_pretrained(model_name)
-        if use_gpu:
-            if torch.cuda.is_available():
-                self.model = self.model.to("cuda")
-            else:
-                logging.warning("No GPU devices available")
 
     def preprocess_texts(self, texts):
         inputs = self.processor(text=texts, return_tensors="pt", padding="max_length")
@@ -137,15 +135,10 @@ class SiglipModel(SimilarityModelBase):
 
 class ClipModel(SimilarityModelBase):
     """A CLIP model to calculate representations of text/images and score their similarities."""
-    def __init__(self, use_gpu=True):
+    def __init__(self):
         model_name = "openai/clip-vit-base-patch32"
         self.processor = transformers.CLIPProcessor.from_pretrained(model_name)
         self.model = transformers.CLIPModel.from_pretrained(model_name)
-        if use_gpu:
-            if torch.cuda.is_available():
-                self.model = self.model.to("cuda")
-            else:
-                logging.warning("No GPU devices available")
 
     def create_image_embeddings(self, pixel_values):
         with torch.no_grad():
@@ -170,14 +163,16 @@ class ClipModel(SimilarityModelBase):
 
 
 def get_model(model_name, use_gpu):
+    """Construct the model."""
     if model_name == 'google/siglip-base-patch16-224':
-        return SiglipModel(use_gpu)
+        model = SiglipModel()
     elif model_name == "openai/clip-vit-base-patch32":
-        return ClipModel(use_gpu) 
+        model = ClipModel() 
     elif model_name == "kakaobrain/align-base":
-        return AlignModel(use_gpu)
+        model = AlignModel()
     else:
         raise ValueError(f"Unknown model: {model_name}")
+    return model.to_cuda() if use_gpu else model
 
 
 class Database:
