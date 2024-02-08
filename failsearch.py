@@ -327,21 +327,23 @@ def index_directory(db, path, model_name, batch_size=32, num_threads=4, file_ext
     db.close()
 
 
-def search(db, text, n=5):
-    """returns the closest N matches for a given text in the DB."""
-
+def load_from_db_and_search(db, text, n=5):
+    """Returns the closest N matches for a given text in the DB."""
     model_name = db.get_model()
     cpu_model = get_model(model_name, use_gpu = False)
     logging.info(f"Model: {model_name}")
-
     files, image_embeds = db.get_all_data()
     image_embeds = torch.from_numpy(image_embeds)
-    text_values = cpu_model.preprocess_texts([text])
-    text_embeds = cpu_model.create_text_embeddings(text_values)
-    logits = cpu_model.get_logits(image_embeds, text_embeds)
+    return search(text, image_embeds, files, cpu_model, n)
+
+
+def search(text, image_embeds, files, model, n=5):
+    """Searches for the closest match to text in the image_embeds."""
+    text_values = model.preprocess_texts([text])
+    text_embeds = model.create_text_embeddings(text_values)
+    logits = model.get_logits(image_embeds, text_embeds)
     idx = np.argsort(logits[0])[-n:]
     return [files[i] for i in idx[::-1]]
-
 
 
 if __name__ == "__main__":
